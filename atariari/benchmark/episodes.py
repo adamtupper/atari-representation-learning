@@ -9,7 +9,6 @@ import os
 from .envs import make_vec_envs
 from .utils import download_run
 from stable_baselines import PPO2
-from torch.distributions import Bernoulli
 from sklearn.utils import shuffle
 try:
     import wandb
@@ -156,11 +155,6 @@ def get_custom_rollouts(env_name, model_path, steps, gcd, seed=42,
             action, _states = model.predict(downsample_obs(obs).clone())
 
         action = torch.tensor([envs.action_space.sample() if np.random.uniform(0, 1) < 0.2 else action]).unsqueeze(dim=1)
-
-        # Custom PPO model doesn't return entropy, so this is calculated here (in the same way as the Atari ARI model)
-        action_probs = model.action_probability(downsample_obs(obs).clone())
-        action_prob_dist = Bernoulli(torch.Tensor(action_probs))
-        entropies.append(action_prob_dist.entropy().sum(-1));
         
         obs, reward, done, infos = envs.step(action.clone())
         for i, info in enumerate(infos):  # len(infos) = 1 as only one process is used
