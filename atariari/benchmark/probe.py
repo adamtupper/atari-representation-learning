@@ -44,7 +44,8 @@ class ProbeTrainer():
                  lr=5e-4,
                  epochs=100,
                  batch_size=64,
-                 representation_len=256):
+                 representation_len=256,
+                 verbose=True):
 
         self.encoder = encoder
         self.wandb = wandb
@@ -59,6 +60,7 @@ class ProbeTrainer():
         self.method = method_name
         self.feature_size = representation_len
         self.loss_fn = nn.CrossEntropyLoss()
+        self.verbose = verbose
 
         # bad convention, but these get set in "create_probes"
         self.probes = self.early_stoppers = self.optimizers = self.schedulers = None
@@ -74,19 +76,20 @@ class ProbeTrainer():
                                           num_classes=self.num_classes).to(self.device) for k in sample_label.keys()}
 
         self.early_stoppers = {
-            k: EarlyStopping(patience=self.patience, verbose=False, name=k + "_probe", save_dir=self.save_dir)
+            k: EarlyStopping(patience=self.patience, verbose=self.verbose, name=k + "_probe", save_dir=self.save_dir)
             for k in sample_label.keys()}
 
         self.optimizers = {k: torch.optim.Adam(list(self.probes[k].parameters()),
                                                eps=1e-5, lr=self.lr) for k in sample_label.keys()}
         self.schedulers = {
-            k: torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizers[k], patience=5, factor=0.2, verbose=True,
+            k: torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizers[k], patience=5, factor=0.2, verbose=self.verbose,
                                                           mode='max', min_lr=1e-5) for k in sample_label.keys()}
 
     def generate_batch(self, episodes, episode_labels):
         total_steps = sum([len(e) for e in episodes])
         assert total_steps > self.batch_size
-        print('Total Steps: {}'.format(total_steps))
+        if self.verbose:
+            print('Total Steps: {}'.format(total_steps))
         # Episode sampler
         # Sample `num_samples` episodes then batchify them with `self.batch_size` episodes per batch
         sampler = BatchSampler(RandomSampler(range(len(episodes)),
@@ -208,7 +211,8 @@ class ProbeTrainer():
                     scheduler.step(val_accuracy['val_' + k + '_acc'])
             e += 1
             all_probes_stopped = np.all([early_stopper.early_stop for early_stopper in self.early_stoppers.values()])
-        print("All probes early stopped!")
+        if self.verbose:
+            print("All probes early stopped!")
 
     def evaluate(self, val_episodes, val_label_dicts, epoch=None):
         for k, probe in self.probes.items():
@@ -230,21 +234,23 @@ class ProbeTrainer():
 
         acc_dict, f1_dict = postprocess_raw_metrics(acc_dict, f1_dict)
 
-        print("""In our paper, we report F1 scores and accuracies averaged across each category. 
-              That is, we take a mean across all state variables in a category to get the average score for that category.
-              Then we average all the category averages to get the final score that we report per game for each method. 
-              These scores are called \'across_categories_avg_acc\' and \'across_categories_avg_f1\' respectively
-              We do this to prevent categories with large number of state variables dominating the mean F1 score.
-              """)
+        if self.verbose:
+            print("""In our paper, we report F1 scores and accuracies averaged across each category. 
+                That is, we take a mean across all state variables in a category to get the average score for that category.
+                Then we average all the category averages to get the final score that we report per game for each method. 
+                These scores are called \'across_categories_avg_acc\' and \'across_categories_avg_f1\' respectively
+                We do this to prevent categories with large number of state variables dominating the mean F1 score.
+                """)
         self.log_results("Test", acc_dict, f1_dict)
         return acc_dict, f1_dict
 
     def log_results(self, epoch_idx, *dictionaries):
-        print("Epoch: {}".format(epoch_idx))
-        for dictionary in dictionaries:
-            for k, v in dictionary.items():
-                print("\t {}: {:8.4f}".format(k, v))
-            print("\t --")
+        if self.verbose:
+            print("Epoch: {}".format(epoch_idx))
+            for dictionary in dictionaries:
+                for k, v in dictionary.items():
+                    print("\t {}: {:8.4f}".format(k, v))
+                print("\t --")
 
 
 def postprocess_raw_metrics(acc_dict, f1_dict):

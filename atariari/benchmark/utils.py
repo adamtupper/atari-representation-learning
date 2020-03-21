@@ -110,10 +110,12 @@ class EarlyStopping(object):
             self.val_acc_max = val_acc
         elif score <= self.best_score:
             self.counter += 1
-            print(f'EarlyStopping for {self.name} counter: {self.counter} out of {self.patience}')
+            if self.verbose:
+                print(f'EarlyStopping for {self.name} counter: {self.counter} out of {self.patience}')
             if self.counter >= self.patience:
                 self.early_stop = True
-                print(f'{self.name} has stopped')
+                if self.verbose:
+                    print(f'{self.name} has stopped')
 
         else:
             self.best_score = score
