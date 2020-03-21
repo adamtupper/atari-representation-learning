@@ -2,11 +2,15 @@ from .label_preprocess import remove_duplicates, remove_low_entropy_labels
 from collections import deque
 from itertools import chain
 import numpy as np
+import cv2
 import torch
 import time
 import os
 from .envs import make_vec_envs
 from .utils import download_run
+from stable_baselines import PPO2
+from torch.distributions import Bernoulli
+from sklearn.utils import shuffle
 try:
     import wandb
 except:
@@ -29,6 +33,22 @@ checkpointed_steps_full_sorted = [1536, 1076736, 2151936, 3227136, 4302336, 5377
                                   27956736, 29031936, 30107136, 31182336, 32257536, 33332736, 34407936, 35483136,
                                   36558336, 37633536, 38708736, 39783936, 40859136, 41934336, 43009536, 44084736,
                                   45159936, 46235136, 47310336, 48385536, 49460736, 49999872]
+
+
+def downsample_obs(obs):
+    """
+    Downsample the frames in the observation to 84x84 px.
+    
+    NOTE: frames must have already been converted to single-channel
+    (i.e. grayscale) images.
+    """
+    obs = np.array(obs)
+    obs = obs.squeeze(0)
+    obs = np.transpose(obs, (1, 2, 0))
+    frames = [obs[:,:,i] for i in range(obs.shape[2])]
+    frames = [cv2.resize(f, (84, 84), interpolation=cv2.INTER_AREA) for f in frames]
+    
+    return torch.Tensor(np.transpose(np.array(frames), (1, 2, 0)))
 
 
 def get_random_agent_rollouts(env_name, steps, seed=42, num_processes=1, num_frame_stack=1, downsample=False, color=False):
@@ -118,6 +138,58 @@ def get_ppo_rollouts(env_name, steps, seed=42, num_processes=1,
     return episodes, episode_labels
 
 
+def get_custom_rollouts(env_name, model_path, steps, gcd, seed=42,
+                        num_frame_stack=1, downsample=False, color=False):
+    envs = make_vec_envs(env_name, seed,  1, num_frame_stack, downsample, color)
+
+    model = PPO2.load(model_path)
+
+    hashes = set()  # Store to check for duplicates during frame collection
+    frames = []
+    frame_labels = []
+    entropies = []
+    frames_since_last_reward = 0
+
+    obs = envs.reset()
+    while len(hashes) < steps:
+        with torch.no_grad():
+            action, _states = model.predict(downsample_obs(obs).clone())
+
+        action = torch.tensor([envs.action_space.sample() if np.random.uniform(0, 1) < 0.2 else action]).unsqueeze(dim=1)
+
+        # Custom PPO model doesn't return entropy, so this is calculated here (in the same way as the Atari ARI model)
+        action_probs = model.action_probability(downsample_obs(obs).clone())
+        action_prob_dist = Bernoulli(torch.Tensor(action_probs))
+        entropies.append(action_prob_dist.entropy().sum(-1));
+        
+        obs, reward, done, infos = envs.step(action.clone())
+        for i, info in enumerate(infos):  # len(infos) = 1 as only one process is used
+            obs_hash = np.array(obs[i][0,:,:]).tostring()
+
+            if obs_hash not in hashes:
+                frames.append(obs[i][0,:,:].clone().unsqueeze(0))
+                frame_labels.append(info['labels'])
+
+                if reward.item() == 0:
+                    frames_since_last_reward += 1
+                else:
+                    frames_since_last_reward = 0
+
+                hashes.add(obs_hash)
+
+        if (frames_since_last_reward > 18000):  # 18,000 frames = 5 min of gameplay
+            frames_since_last_reward = 0
+            obs = envs.reset()
+
+    # NOTE: This method returns batches of shuffled frames (from different episodes), not episodes
+    shuffle(frames, random_state=seed)
+    shuffle(frame_labels, random_state=seed)
+    batches = [frames[i:i + gcd] for i in range(0, len(frames), gcd)]
+    batch_labels = [frame_labels[i:i + gcd] for i in range(0, len(frames), gcd)]
+
+    return batches, batch_labels 
+
+
 def get_episodes(env_name,
                  steps,
                  seed=42,
@@ -129,7 +201,9 @@ def get_episodes(env_name,
                  collect_mode="random_agent",
                  train_mode="probe",
                  checkpoint_index=-1,
-                 min_episode_length=64):
+                 min_episode_length=64,
+                 model_path=None,
+                 gcd=5000):
 
     if collect_mode == "random_agent":
         # List of episodes. Each episode is a list of 160x210 observations
@@ -152,6 +226,16 @@ def get_episodes(env_name,
                                                    color=color,
                                                    checkpoint_index=checkpoint_index)
 
+    elif collect_mode == "custom_agent":
+        # List of episodes. Each episode is a list of 160x210 observations
+        episodes, episode_labels = get_custom_rollouts(env_name=env_name,
+                                                       model_path=model_path,
+                                                       steps=steps,
+                                                       gcd=gcd,
+                                                       seed=seed,
+                                                       num_frame_stack=num_frame_stack,
+                                                       downsample=downsample,
+                                                       color=color)
 
     else:
         assert False, "Collect mode {} not recognized".format(collect_mode)
