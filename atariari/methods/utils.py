@@ -128,16 +128,8 @@ def calculate_multiclass_accuracy(preds, labels):
     return acc
 
 
-def calculate_mape(preds, targets, offset=0):
-    # Optional offset is added to ensure targets are strictly positive
-    mape_sum = 0
-    for pred, target in zip(preds, targets):
-        pred += offset
-        target += offset
-        mape_sum += abs(target - pred) / target
-
-    mape = mape_sum / len(targets)
-    return mape
+def calculate_mae(preds, targets):
+    return np.absolute(np.subtract(preds, targets)).mean()
 
 
 def calculate_mse(preds, targets):

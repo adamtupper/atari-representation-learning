@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from .utils import EarlyStopping, appendabledict, \
     calculate_multiclass_accuracy, calculate_multiclass_f1_score, \
-    calculate_mse, calculate_mape, \
+    calculate_mse, calculate_mae, \
     append_suffix, compute_dict_average
 
 from copy import deepcopy
@@ -306,7 +306,7 @@ class ClassificationProbeTrainer(ProbeTrainer):
             probe.eval()
         acc_dict, f1_dict = self.do_test_epoch(test_episodes, test_label_dicts)
 
-        acc_dict, f1_dict = postprocess_raw_metrics(acc_dict, f1_dict)
+        acc_dict, f1_dict = self.postprocess_raw_metrics(acc_dict, f1_dict)
 
         if self.verbose:
             print("""In our paper, we report F1 scores and accuracies averaged across each category. 
@@ -316,6 +316,27 @@ class ClassificationProbeTrainer(ProbeTrainer):
                 We do this to prevent categories with large number of state variables dominating the mean F1 score.
                 """)
         self.log_results("Test", acc_dict, f1_dict)
+        return acc_dict, f1_dict
+
+    @staticmethod
+    def postprocess_raw_metrics(acc_dict, f1_dict):
+        # TODO: Make a generic version of this function in ProbeTrainer
+        acc_overall_avg, f1_overall_avg = compute_dict_average(acc_dict), \
+                                          compute_dict_average(f1_dict)
+        acc_category_avgs_dict, f1_category_avgs_dict = compute_category_avgs(acc_dict), \
+                                                        compute_category_avgs(f1_dict)
+        acc_avg_across_categories, f1_avg_across_categories = compute_dict_average(acc_category_avgs_dict), \
+                                                              compute_dict_average(f1_category_avgs_dict)
+        acc_dict.update(acc_category_avgs_dict)
+        f1_dict.update(f1_category_avgs_dict)
+
+        acc_dict["overall_avg"], f1_dict["overall_avg"] = acc_overall_avg, f1_overall_avg
+        acc_dict["across_categories_avg"], f1_dict["across_categories_avg"] = [acc_avg_across_categories,
+                                                                               f1_avg_across_categories]
+
+        acc_dict = append_suffix(acc_dict, "_acc")
+        f1_dict = append_suffix(f1_dict, "_f1")
+
         return acc_dict, f1_dict
 
 
@@ -378,7 +399,7 @@ class RegressionProbeTrainer(ProbeTrainer):
     def do_test_epoch(self, episodes, label_dicts):
         # TODO: Decide on performance metrics
         sample_label = label_dicts[0][0]
-        mse_dict, mape_dict = {}, {}
+        mse_dict, mae_dict = {}, {}
         pred_dict, all_label_dict = {k: [] for k in sample_label.keys()}, \
                                     {k: [] for k in sample_label.keys()}
 
@@ -397,11 +418,11 @@ class RegressionProbeTrainer(ProbeTrainer):
 
             # preds = np.argmax(preds, axis=1)
             mse = calculate_mse(preds, labels)
-            mape = calculate_mape(preds, labels, offset=1)  # Make offset a configurable parameter
+            mae = calculate_mae(preds, labels)
             mse_dict[k] = mse
-            mape_dict[k] = mape
+            mae_dict[k] = mae
 
-        return mse_dict, mape_dict
+        return mse_dict, mae_dict
 
     def train(self, tr_eps, val_eps, tr_labels, val_labels):
         sample_label = tr_labels[0][0]
@@ -443,32 +464,32 @@ class RegressionProbeTrainer(ProbeTrainer):
             self.early_stoppers[k].early_stop = False
         for k, probe in self.probes.items():
             probe.eval()
-        mse_dict, mape_dict = self.do_test_epoch(test_episodes, test_label_dicts)
+        mse_dict, mae_dict = self.do_test_epoch(test_episodes, test_label_dicts)
 
-        mse_dict, mape_dict = postprocess_raw_metrics(mse_dict, mape_dict)
+        mse_dict, mae_dict = self.postprocess_raw_metrics(mse_dict, mae_dict)
 
-        self.log_results("Test", mse_dict) #, mape_dict)
-        return mse_dict#, mape_dict
+        self.log_results("Test", mse_dict, mae_dict)
+        return mse_dict, mae_dict
 
+    @staticmethod
+    def postprocess_raw_metrics(mse_dict, mae_dict):
+        mse_overall_avg, mae_overall_avg = compute_dict_average(mse_dict), \
+                                          compute_dict_average(mae_dict)
+        mse_category_avgs_dict, mae_category_avgs_dict = compute_category_avgs(mse_dict), \
+                                                         compute_category_avgs(mae_dict)
+        mse_avg_across_categories, mae_avg_across_categories = compute_dict_average(mse_category_avgs_dict), \
+                                                               compute_dict_average(mae_category_avgs_dict)
+        mse_dict.update(mse_category_avgs_dict)
+        mae_dict.update(mae_category_avgs_dict)
 
-def postprocess_raw_metrics(acc_dict, f1_dict):
-    acc_overall_avg, f1_overall_avg = compute_dict_average(acc_dict), \
-                                      compute_dict_average(f1_dict)
-    acc_category_avgs_dict, f1_category_avgs_dict = compute_category_avgs(acc_dict), \
-                                                    compute_category_avgs(f1_dict)
-    acc_avg_across_categories, f1_avg_across_categories = compute_dict_average(acc_category_avgs_dict), \
-                                                          compute_dict_average(f1_category_avgs_dict)
-    acc_dict.update(acc_category_avgs_dict)
-    f1_dict.update(f1_category_avgs_dict)
+        mse_dict["overall_avg"], mae_dict["overall_avg"] = mse_overall_avg, mae_overall_avg
+        mse_dict["across_categories_avg"], mae_dict["across_categories_avg"] = [mse_avg_across_categories,
+                                                                                mae_avg_across_categories]
 
-    acc_dict["overall_avg"], f1_dict["overall_avg"] = acc_overall_avg, f1_overall_avg
-    acc_dict["across_categories_avg"], f1_dict["across_categories_avg"] = [acc_avg_across_categories,
-                                                                           f1_avg_across_categories]
+        mse_dict = append_suffix(mse_dict, "_mse")
+        mae_dict = append_suffix(mae_dict, "_mae")
 
-    acc_dict = append_suffix(acc_dict, "_acc")
-    f1_dict = append_suffix(f1_dict, "_f1")
-
-    return acc_dict, f1_dict
+        return mse_dict, mae_dict
 
 
 def compute_category_avgs(metric_dict):
