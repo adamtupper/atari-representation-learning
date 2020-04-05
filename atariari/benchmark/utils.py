@@ -4,6 +4,8 @@ from sklearn.metrics import f1_score as compute_f1_score
 from pathlib import Path
 import numpy as np
 
+# TODO: Some methods have been replicated in the two utils modules. This should be changed?
+
 
 def compute_dict_average(metric_dict):
     return np.mean(list(metric_dict.values()))
@@ -148,3 +150,22 @@ def calculate_multiclass_f1_score(preds, labels):
 def calculate_multiclass_accuracy(preds, labels):
     acc = float(np.sum((preds == labels).astype(int)) / len(labels))
     return acc
+
+
+def calculate_mape(preds, targets, offset=0):
+    # Optional offset is added to ensure targets are strictly positive
+    mape_sum = 0
+    for pred, target in zip(preds, targets):
+        pred += offset
+        target += offset
+        mape_sum += abs(target - pred) / target
+
+    mape = mape_sum / len(targets)
+    return mape
+    targets += offset
+    preds += offset
+    return np.absolute(np.subtract(targets, preds ) / targets).sum() * 100 / len(targets)
+
+
+def calculate_mse(preds, targets):
+    return np.square(np.subtract(preds, targets)).mean()

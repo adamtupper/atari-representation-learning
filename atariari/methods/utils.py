@@ -15,6 +15,8 @@ train_encoder_methods = ['cpc', 'jsd-stdim', 'vae', "naff", "infonce-stdim", "gl
                          "global-local-infonce-stdim", "dim"]
 probe_only_methods = ["supervised", "random-cnn", "majority", "pretrained-rl-agent"]
 
+# TODO: Some methods have been replicated in the two utils modules. This should be changed?
+
 
 def get_argparser():
     parser = argparse.ArgumentParser()
@@ -41,7 +43,7 @@ def get_argparser():
                         help='Whether to use multiple linear classifiers in the contrastive loss')
 
     parser.add_argument('--lr', type=float, default=3e-4,
-                        help='Learning Rate foe learning representations (default: 5e-4)')
+                        help='Learning Rate for learning representations (default: 5e-4)')
     parser.add_argument('--batch-size', type=int, default=64,
                         help='Mini-Batch Size (default: 64)')
     parser.add_argument('--epochs', type=int, default=100,
@@ -124,6 +126,22 @@ def calculate_multiclass_accuracy(preds, labels):
     preds = torch.argmax(preds, dim=1)
     acc = float(torch.sum(torch.eq(labels, preds)).data) / labels.size(0)
     return acc
+
+
+def calculate_mape(preds, targets, offset=0):
+    # Optional offset is added to ensure targets are strictly positive
+    mape_sum = 0
+    for pred, target in zip(preds, targets):
+        pred += offset
+        target += offset
+        mape_sum += abs(target - pred) / target
+
+    mape = mape_sum / len(targets)
+    return mape
+
+
+def calculate_mse(preds, targets):
+    return np.square(np.subtract(preds, targets)).mean()
 
 
 def save_model(model, envs, save_dir, model_name, use_cuda):

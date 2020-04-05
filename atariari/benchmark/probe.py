@@ -1,7 +1,8 @@
 import torch
 from torch import nn
 from .utils import EarlyStopping, appendabledict, \
-    calculate_multiclass_accuracy, calculate_multiclass_f1_score,\
+    calculate_multiclass_accuracy, calculate_multiclass_f1_score, \
+    calculate_mse, calculate_mape, \
     append_suffix, compute_dict_average
 
 from copy import deepcopy
@@ -11,33 +12,50 @@ from .categorization import summary_key_dict
 
 
 class LinearProbe(nn.Module):
-    def __init__(self, input_dim, num_classes=255):
+    def __init__(self, input_dim, num_outputs=255):
         super().__init__()
-        self.model = nn.Linear(in_features=input_dim, out_features=num_classes)
+        self.model = nn.Linear(in_features=input_dim, out_features=num_outputs)
 
     def forward(self, feature_vectors):
         return self.model(feature_vectors)
 
 
 class FullySupervisedLinearProbe(nn.Module):
-    def __init__(self, encoder, num_classes=255):
+    def __init__(self, encoder, num_outputs=255):
         super().__init__()
         self.encoder = deepcopy(encoder)
         self.probe = LinearProbe(input_dim=self.encoder.hidden_size,
-                                 num_classes=num_classes)
+                                 num_outputs=num_outputs)
 
     def forward(self, x):
         feature_vec = self.encoder(x)
         return self.probe(feature_vec)
 
 
-class ProbeTrainer():
+class NonLinearProbe(nn.Module):
+    """
+    Simple non-linear model with one hidden layer the same size as the input
+    layer.
+    """
+    def __init__(self, input_dim, num_outputs=255):
+        super().__init__()
+        self.model = torch.nn.Sequential(
+            nn.Linear(in_features=input_dim, out_features=input_dim),
+            nn.ReLU(),
+            nn.Linear(in_features=input_dim, out_features=num_outputs),
+        )
+
+    def forward(self, feature_vectors):
+        return self.model(feature_vectors)
+
+
+class ProbeTrainer:
     def __init__(self,
                  encoder=None,
                  method_name="my_method",
                  wandb=None,
                  patience=15,
-                 num_classes=256,
+                 num_outputs=256,
                  fully_supervised=False,
                  save_dir=".models",
                  device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
@@ -45,14 +63,15 @@ class ProbeTrainer():
                  epochs=100,
                  batch_size=64,
                  representation_len=256,
-                 verbose=True):
+                 verbose=True,
+                 non_linear=False):
 
         self.encoder = encoder
         self.wandb = wandb
         self.device = device
         self.fully_supervised = fully_supervised
         self.save_dir = save_dir
-        self.num_classes = num_classes
+        self.num_outputs = num_outputs
         self.epochs = epochs
         self.lr = lr
         self.batch_size = batch_size
@@ -61,6 +80,7 @@ class ProbeTrainer():
         self.feature_size = representation_len
         self.loss_fn = nn.CrossEntropyLoss()
         self.verbose = verbose
+        self.non_linear = non_linear
 
         # bad convention, but these get set in "create_probes"
         self.probes = self.early_stoppers = self.optimizers = self.schedulers = None
@@ -69,11 +89,14 @@ class ProbeTrainer():
         if self.fully_supervised:
             assert self.encoder != None, "for fully supervised you must provide an encoder!"
             self.probes = {k: FullySupervisedLinearProbe(encoder=self.encoder,
-                                                         num_classes=self.num_classes).to(self.device) for k in
+                                                         num_outputs=self.num_outputs).to(self.device) for k in
                            sample_label.keys()}
+        elif self.non_linear:
+            self.probes = {k: NonLinearProbe(input_dim=self.feature_size,
+                                             num_outputs=self.num_outputs).to(self.device) for k in sample_label.keys()}
         else:
             self.probes = {k: LinearProbe(input_dim=self.feature_size,
-                                          num_classes=self.num_classes).to(self.device) for k in sample_label.keys()}
+                                          num_outputs=self.num_outputs).to(self.device) for k in sample_label.keys()}
 
         self.early_stoppers = {
             k: EarlyStopping(patience=self.patience, verbose=self.verbose, name=k + "_probe", save_dir=self.save_dir)
@@ -126,6 +149,57 @@ class ProbeTrainer():
                 f = self.encoder(batch).detach()
             preds = probe(f)
         return preds
+
+    def log_results(self, epoch_idx, *dictionaries):
+        if self.verbose:
+            print("Epoch: {}".format(epoch_idx))
+            for dictionary in dictionaries:
+                for k, v in dictionary.items():
+                    print("\t {}: {:8.4f}".format(k, v))
+                print("\t --")
+
+    # Very little changes between these functions for classification and regression.
+    # Would it be better to generalise them and make them ProbeTrainer methods?
+    def do_one_epoch(self, episodes, label_dicts):
+        raise NotImplementedError("Use either a classification or regression probe trainer.")
+
+    def do_test_epoch(self, episodes, label_dicts):
+        raise NotImplementedError("Use either a classification or regression probe trainer.")
+
+    def train(self, tr_eps, val_eps, tr_labels, val_labels):
+        raise NotImplementedError("Use either a classification or regression probe trainer.")
+
+    def evaluate(self, val_episodes, val_label_dicts, epoch=None):
+        raise NotImplementedError("Use either a classification or regression probe trainer.")
+
+    def test(self, test_episodes, test_label_dicts, epoch=None):
+        raise NotImplementedError("Use either a classification or regression probe trainer.")
+
+
+class ClassificationProbeTrainer(ProbeTrainer):
+    def __init__(self,
+                 encoder=None,
+                 method_name="my_method",
+                 wandb=None,
+                 patience=15,
+                 num_classes=256,
+                 fully_supervised=False,
+                 save_dir=".models",
+                 device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                 lr=5e-4,
+                 epochs=100,
+                 batch_size=64,
+                 representation_len=256,
+                 verbose=True,
+                 non_linear=False):
+
+        super().__init__(encoder, method_name, wandb, patience, num_classes,
+                         fully_supervised, save_dir, device, lr, epochs,
+                         batch_size, representation_len, verbose, non_linear)
+        self.loss_fn = nn.CrossEntropyLoss()
+
+        # bad convention, but these get set in "create_probes"
+        self.probes = self.early_stoppers = self.optimizers = self.schedulers = None
 
     def do_one_epoch(self, episodes, label_dicts):
         sample_label = label_dicts[0][0]
@@ -244,13 +318,137 @@ class ProbeTrainer():
         self.log_results("Test", acc_dict, f1_dict)
         return acc_dict, f1_dict
 
-    def log_results(self, epoch_idx, *dictionaries):
+
+class RegressionProbeTrainer(ProbeTrainer):
+    def __init__(self,
+                 encoder=None,
+                 method_name="my_method",
+                 wandb=None,
+                 patience=15,
+                 fully_supervised=False,
+                 save_dir=".models",
+                 device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                 lr=5e-4,
+                 epochs=100,
+                 batch_size=64,
+                 representation_len=256,
+                 verbose=True,
+                 non_linear=False):
+
+        super().__init__(encoder, method_name, wandb, patience, 1,
+                         fully_supervised, save_dir, device, lr, epochs,
+                         batch_size, representation_len, verbose, non_linear)
+        self.loss_fn = nn.MSELoss()
+
+        # bad convention, but these get set in "create_probes"
+        self.probes = self.early_stoppers = self.optimizers = self.schedulers = None
+
+    def do_one_epoch(self, episodes, label_dicts):
+        sample_label = label_dicts[0][0]
+        epoch_loss, mse = {k + "_loss": [] for k in sample_label.keys() if not self.early_stoppers[k].early_stop}, \
+                          {k + "_mse": [] for k in sample_label.keys() if not self.early_stoppers[k].early_stop}
+
+        data_generator = self.generate_batch(episodes, label_dicts)
+        for step, (x, labels_batch) in enumerate(data_generator):
+            for k, label in labels_batch.items():
+                if self.early_stoppers[k].early_stop:
+                    continue
+                optim = self.optimizers[k]
+                optim.zero_grad()
+
+                label = torch.tensor(label).float().to(self.device)
+                preds = self.probe(x, k)
+
+                loss = self.loss_fn(preds, label)
+
+                epoch_loss[k + "_loss"].append(loss.detach().item())
+                preds = preds.cpu().detach().numpy()
+                # preds = np.argmax(preds, axis=1)
+                label = label.cpu().detach().numpy()
+                mse[k + "_mse"].append(calculate_mse(preds, label))  # TODO: Does MSE need to be calculated separately to the loss?
+                if self.probes[k].training:
+                    loss.backward()
+                    optim.step()
+
+        epoch_loss = {k: np.mean(loss) for k, loss in epoch_loss.items()}
+        mse = {k: np.mean(mse) for k, mse in mse.items()}
+
+        return epoch_loss, mse
+
+    def do_test_epoch(self, episodes, label_dicts):
+        # TODO: Decide on performance metrics
+        sample_label = label_dicts[0][0]
+        mse_dict, mape_dict = {}, {}
+        pred_dict, all_label_dict = {k: [] for k in sample_label.keys()}, \
+                                    {k: [] for k in sample_label.keys()}
+
+        # collect all predictions first
+        data_generator = self.generate_batch(episodes, label_dicts)
+        for step, (x, labels_batch) in enumerate(data_generator):
+            for k, label in labels_batch.items():
+                label = torch.tensor(label).float().cpu()
+                all_label_dict[k].append(label)
+                preds = self.probe(x, k).detach().cpu()
+                pred_dict[k].append(preds)
+
+        for k in all_label_dict.keys():
+            preds, labels = torch.cat(pred_dict[k]).cpu().detach().numpy(), \
+                            torch.cat(all_label_dict[k]).cpu().detach().numpy()
+
+            # preds = np.argmax(preds, axis=1)
+            mse = calculate_mse(preds, labels)
+            mape = calculate_mape(preds, labels, offset=1)  # Make offset a configurable parameter
+            mse_dict[k] = mse
+            mape_dict[k] = mape
+
+        return mse_dict, mape_dict
+
+    def train(self, tr_eps, val_eps, tr_labels, val_labels):
+        sample_label = tr_labels[0][0]
+        self.create_probes(sample_label)
+        e = 0
+        all_probes_stopped = np.all([early_stopper.early_stop for early_stopper in self.early_stoppers.values()])
+        while (not all_probes_stopped) and e < self.epochs:
+            epoch_loss, mse = self.do_one_epoch(tr_eps, tr_labels)
+            self.log_results(e, epoch_loss, mse)
+
+            val_loss, val_mse = self.evaluate(val_eps, val_labels, epoch=e)
+            # update all early stoppers
+            for k in sample_label.keys():
+                if not self.early_stoppers[k].early_stop:
+                    # Use -ve MSE as higher is supposed to be better
+                    self.early_stoppers[k](-val_mse["val_" + k + "_mse"], self.probes[k])
+
+            for k, scheduler in self.schedulers.items():
+                if not self.early_stoppers[k].early_stop:
+                    scheduler.step(val_mse['val_' + k + '_mse'])
+            e += 1
+            all_probes_stopped = np.all([early_stopper.early_stop for early_stopper in self.early_stoppers.values()])
         if self.verbose:
-            print("Epoch: {}".format(epoch_idx))
-            for dictionary in dictionaries:
-                for k, v in dictionary.items():
-                    print("\t {}: {:8.4f}".format(k, v))
-                print("\t --")
+            print("All probes early stopped!")
+
+    def evaluate(self, val_episodes, val_label_dicts, epoch=None):
+        for k, probe in self.probes.items():
+            probe.eval()
+        epoch_loss, mse = self.do_one_epoch(val_episodes, val_label_dicts)
+        epoch_loss = {"val_" + k: v for k, v in epoch_loss.items()}
+        mse = {"val_" + k: v for k, v in mse.items()}
+        self.log_results(epoch, epoch_loss, mse)
+        for k, probe in self.probes.items():
+            probe.train()
+        return epoch_loss, mse
+
+    def test(self, test_episodes, test_label_dicts, epoch=None):
+        for k in self.early_stoppers.keys():
+            self.early_stoppers[k].early_stop = False
+        for k, probe in self.probes.items():
+            probe.eval()
+        mse_dict, mape_dict = self.do_test_epoch(test_episodes, test_label_dicts)
+
+        mse_dict, mape_dict = postprocess_raw_metrics(mse_dict, mape_dict)
+
+        self.log_results("Test", mse_dict) #, mape_dict)
+        return mse_dict#, mape_dict
 
 
 def postprocess_raw_metrics(acc_dict, f1_dict):
@@ -282,6 +480,3 @@ def compute_category_avgs(metric_dict):
         category_mean = np.mean(category_values)
         category_dict[category_name + "_avg"] = category_mean
     return category_dict
-
-
-
