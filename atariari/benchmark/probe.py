@@ -378,7 +378,7 @@ class RegressionProbeTrainer(ProbeTrainer):
                 optim.zero_grad()
 
                 label = torch.tensor(label).float().to(self.device)
-                preds = self.probe(x, k)
+                preds = self.probe(x, k).squeeze()
 
                 loss = self.loss_fn(preds, label)
 
@@ -422,7 +422,7 @@ class RegressionProbeTrainer(ProbeTrainer):
             mse_dict[k] = mse
             mae_dict[k] = mae
 
-        return mse_dict, mae_dict
+        return mse_dict, mae_dict, all_label_dict, pred_dict
 
     def train(self, tr_eps, val_eps, tr_labels, val_labels):
         sample_label = tr_labels[0][0]
@@ -464,12 +464,12 @@ class RegressionProbeTrainer(ProbeTrainer):
             self.early_stoppers[k].early_stop = False
         for k, probe in self.probes.items():
             probe.eval()
-        mse_dict, mae_dict = self.do_test_epoch(test_episodes, test_label_dicts)
+        mse_dict, mae_dict, target_dict, pred_dict = self.do_test_epoch(test_episodes, test_label_dicts)
 
         mse_dict, mae_dict = self.postprocess_raw_metrics(mse_dict, mae_dict)
 
         self.log_results("Test", mse_dict, mae_dict)
-        return mse_dict, mae_dict
+        return mse_dict, mae_dict, target_dict, pred_dict
 
     @staticmethod
     def postprocess_raw_metrics(mse_dict, mae_dict):
