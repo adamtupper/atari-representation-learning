@@ -42,8 +42,6 @@ class NonLinearProbe(nn.Module):
         self.model = torch.nn.Sequential(
             nn.Linear(in_features=input_dim, out_features=input_dim),
             nn.ReLU(),
-            nn.Linear(in_features=input_dim, out_features=input_dim),
-            nn.ReLU(),
             nn.Linear(in_features=input_dim, out_features=num_outputs),
         )
 
