@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from .utils import EarlyStopping, appendabledict, \
     calculate_multiclass_accuracy, calculate_multiclass_f1_score, \
-    calculate_mse, calculate_mae, \
+    calculate_mse, calculate_mae, calculate_r2, \
     append_suffix, compute_dict_average
 
 from copy import deepcopy
@@ -468,8 +468,10 @@ class RegressionProbeTrainer(ProbeTrainer):
 
         mse_dict, mae_dict = self.postprocess_raw_metrics(mse_dict, mae_dict)
 
+        r2_dict = calculate_r2(pred_dict, target_dict)
+
         self.log_results("Test", mse_dict, mae_dict)
-        return mse_dict, mae_dict, target_dict, pred_dict
+        return mse_dict, mae_dict, r2_dict, target_dict, pred_dict
 
     @staticmethod
     def postprocess_raw_metrics(mse_dict, mae_dict):

@@ -158,3 +158,23 @@ def calculate_mae(preds, targets):
 
 def calculate_mse(preds, targets):
     return np.square(np.subtract(preds, targets)).mean()
+
+
+def calculate_r2(pred_dict, target_dict):
+    r2_dict = {}
+    for var in target_dict.keys():
+        # Get targets (Y)
+        targets = np.array([])
+        for i in range(len(target_dict[var])):
+            targets = np.append(targets, np.array(target_dict[var][i]))
+
+        # Get predictions (Y_hat)
+        preds = np.array([])
+        for i in range(len(pred_dict[var])):
+            preds = np.append(preds, np.array(pred_dict[var][i]))
+
+        ss_tot = np.sum((targets - targets.mean()) ** 2)
+        ss_reg = np.sum((targets - preds) ** 2)
+        r2_dict[var] = 1 - ss_reg / ss_tot
+
+    return r2_dict
