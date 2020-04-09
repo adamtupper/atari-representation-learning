@@ -85,7 +85,7 @@ class ProbeTrainer:
         # bad convention, but these get set in "create_probes"
         self.probes = self.early_stoppers = self.optimizers = self.schedulers = None
 
-    def create_probes(self, sample_label):
+    def create_probes(self, sample_label, probe_type):
         if self.fully_supervised:
             assert self.encoder != None, "for fully supervised you must provide an encoder!"
             self.probes = {k: FullySupervisedLinearProbe(encoder=self.encoder,
@@ -104,9 +104,11 @@ class ProbeTrainer:
 
         self.optimizers = {k: torch.optim.Adam(list(self.probes[k].parameters()),
                                                eps=1e-5, lr=self.lr) for k in sample_label.keys()}
+
+        scheduler_mode = 'max' if probe_type == 'classification' else 'min'
         self.schedulers = {
             k: torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizers[k], patience=5, factor=0.2, verbose=self.verbose,
-                                                          mode='max', min_lr=1e-5) for k in sample_label.keys()}
+                                                          mode=scheduler_mode, min_lr=1e-5) for k in sample_label.keys()}
 
     def generate_batch(self, episodes, episode_labels):
         total_steps = sum([len(e) for e in episodes])
@@ -267,7 +269,7 @@ class ClassificationProbeTrainer(ProbeTrainer):
         # if not self.encoder:
         #     assert len(tr_eps[0][0].squeeze().shape) == 2, "if input is a batch of vectors you must specify an encoder!"
         sample_label = tr_labels[0][0]
-        self.create_probes(sample_label)
+        self.create_probes(sample_label, 'classification')
         e = 0
         all_probes_stopped = np.all([early_stopper.early_stop for early_stopper in self.early_stoppers.values()])
         while (not all_probes_stopped) and e < self.epochs:
@@ -409,7 +411,7 @@ class RegressionProbeTrainer(ProbeTrainer):
             for k, label in labels_batch.items():
                 label = torch.tensor(label).float().cpu()
                 all_label_dict[k].append(label)
-                preds = self.probe(x, k).detach().cpu()
+                preds = self.probe(x, k).squeeze().detach().cpu()
                 pred_dict[k].append(preds)
 
         for k in all_label_dict.keys():
@@ -426,7 +428,7 @@ class RegressionProbeTrainer(ProbeTrainer):
 
     def train(self, tr_eps, val_eps, tr_labels, val_labels):
         sample_label = tr_labels[0][0]
-        self.create_probes(sample_label)
+        self.create_probes(sample_label, 'regression')
         e = 0
         all_probes_stopped = np.all([early_stopper.early_stop for early_stopper in self.early_stoppers.values()])
         while (not all_probes_stopped) and e < self.epochs:
