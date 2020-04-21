@@ -6,6 +6,7 @@ from .utils import EarlyStopping, appendabledict, \
     append_suffix, compute_dict_average
 
 from copy import deepcopy
+import re
 import numpy as np
 from torch.utils.data import RandomSampler, BatchSampler
 from .categorization import summary_key_dict
@@ -86,6 +87,8 @@ class ProbeTrainer:
         self.probes = self.early_stoppers = self.optimizers = self.schedulers = None
 
     def create_probes(self, sample_label, probe_type):
+        sample_label = self.filter_labels(sample_label, probe_type)
+
         if self.fully_supervised:
             assert self.encoder != None, "for fully supervised you must provide an encoder!"
             self.probes = {k: FullySupervisedLinearProbe(encoder=self.encoder,
@@ -110,7 +113,20 @@ class ProbeTrainer:
             k: torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizers[k], patience=5, factor=0.2, verbose=self.verbose,
                                                           mode=scheduler_mode, min_lr=1e-5) for k in sample_label.keys()}
 
-    def generate_batch(self, episodes, episode_labels):
+    def filter_labels(self, labels, probe_type):
+        """Filter the state variables (labels) to create probes for based on the
+        probe type.
+        """
+        pattern = '^.*_(x|y)(\d|_\d)?$'  # Pattern for regression variable names
+        if probe_type == 'classification':
+            return {k: v for k, v in labels.items() if not re.match(pattern, k)}
+        else:
+            return {k: v for k, v in labels.items() if re.match(pattern, k)}
+
+    def generate_batch(self, episodes, episode_labels, probe_type):
+        for i in range(len(episode_labels)):
+            episode_labels[i] = [self.filter_labels(obs, probe_type) for obs in episode_labels[i]]
+
         total_steps = sum([len(e) for e in episodes])
         assert total_steps > self.batch_size
         if self.verbose:
@@ -204,13 +220,13 @@ class ClassificationProbeTrainer(ProbeTrainer):
         self.probes = self.early_stoppers = self.optimizers = self.schedulers = None
 
     def do_one_epoch(self, episodes, label_dicts):
-        sample_label = label_dicts[0][0]
+        sample_label = self.filter_labels(label_dicts[0][0], 'classification')
         epoch_loss, accuracy = {k + "_loss": [] for k in sample_label.keys() if
                                 not self.early_stoppers[k].early_stop}, \
                                {k + "_acc": [] for k in sample_label.keys() if
                                 not self.early_stoppers[k].early_stop}
 
-        data_generator = self.generate_batch(episodes, label_dicts)
+        data_generator = self.generate_batch(episodes, label_dicts, 'classification')
         for step, (x, labels_batch) in enumerate(data_generator):
             for k, label in labels_batch.items():
                 if self.early_stoppers[k].early_stop:
@@ -239,13 +255,13 @@ class ClassificationProbeTrainer(ProbeTrainer):
         return epoch_loss, accuracy
 
     def do_test_epoch(self, episodes, label_dicts):
-        sample_label = label_dicts[0][0]
+        sample_label = self.filter_labels(label_dicts[0][0], 'classification')
         accuracy_dict, f1_score_dict = {}, {}
         pred_dict, all_label_dict = {k: [] for k in sample_label.keys()}, \
                                     {k: [] for k in sample_label.keys()}
 
         # collect all predictions first
-        data_generator = self.generate_batch(episodes, label_dicts)
+        data_generator = self.generate_batch(episodes, label_dicts, 'classification')
         for step, (x, labels_batch) in enumerate(data_generator):
             for k, label in labels_batch.items():
                 label = torch.tensor(label).long().cpu()
@@ -263,12 +279,12 @@ class ClassificationProbeTrainer(ProbeTrainer):
             accuracy_dict[k] = accuracy
             f1_score_dict[k] = f1score
 
-        return accuracy_dict, f1_score_dict
+        return accuracy_dict, f1_score_dict, all_label_dict, pred_dict
 
     def train(self, tr_eps, val_eps, tr_labels, val_labels):
         # if not self.encoder:
         #     assert len(tr_eps[0][0].squeeze().shape) == 2, "if input is a batch of vectors you must specify an encoder!"
-        sample_label = tr_labels[0][0]
+        sample_label = self.filter_labels(tr_labels[0][0], 'classification')
         self.create_probes(sample_label, 'classification')
         e = 0
         all_probes_stopped = np.all([early_stopper.early_stop for early_stopper in self.early_stoppers.values()])
@@ -306,7 +322,7 @@ class ClassificationProbeTrainer(ProbeTrainer):
             self.early_stoppers[k].early_stop = False
         for k, probe in self.probes.items():
             probe.eval()
-        acc_dict, f1_dict = self.do_test_epoch(test_episodes, test_label_dicts)
+        acc_dict, f1_dict, target_dict, pred_dict = self.do_test_epoch(test_episodes, test_label_dicts)
 
         acc_dict, f1_dict = self.postprocess_raw_metrics(acc_dict, f1_dict)
 
@@ -318,7 +334,7 @@ class ClassificationProbeTrainer(ProbeTrainer):
                 We do this to prevent categories with large number of state variables dominating the mean F1 score.
                 """)
         self.log_results("Test", acc_dict, f1_dict)
-        return acc_dict, f1_dict
+        return acc_dict, f1_dict, target_dict, pred_dict
 
     @staticmethod
     def postprocess_raw_metrics(acc_dict, f1_dict):
@@ -367,11 +383,11 @@ class RegressionProbeTrainer(ProbeTrainer):
         self.probes = self.early_stoppers = self.optimizers = self.schedulers = None
 
     def do_one_epoch(self, episodes, label_dicts):
-        sample_label = label_dicts[0][0]
+        sample_label = self.filter_labels(label_dicts[0][0], 'regression')
         epoch_loss, mse = {k + "_loss": [] for k in sample_label.keys() if not self.early_stoppers[k].early_stop}, \
                           {k + "_mse": [] for k in sample_label.keys() if not self.early_stoppers[k].early_stop}
 
-        data_generator = self.generate_batch(episodes, label_dicts)
+        data_generator = self.generate_batch(episodes, label_dicts, 'regression')
         for step, (x, labels_batch) in enumerate(data_generator):
             for k, label in labels_batch.items():
                 if self.early_stoppers[k].early_stop:
@@ -400,13 +416,13 @@ class RegressionProbeTrainer(ProbeTrainer):
 
     def do_test_epoch(self, episodes, label_dicts):
         # TODO: Decide on performance metrics
-        sample_label = label_dicts[0][0]
+        sample_label = self.filter_labels(label_dicts[0][0], 'regression')
         mse_dict, mae_dict = {}, {}
         pred_dict, all_label_dict = {k: [] for k in sample_label.keys()}, \
                                     {k: [] for k in sample_label.keys()}
 
         # collect all predictions first
-        data_generator = self.generate_batch(episodes, label_dicts)
+        data_generator = self.generate_batch(episodes, label_dicts, 'regression')
         for step, (x, labels_batch) in enumerate(data_generator):
             for k, label in labels_batch.items():
                 label = torch.tensor(label).float().cpu()
@@ -427,7 +443,7 @@ class RegressionProbeTrainer(ProbeTrainer):
         return mse_dict, mae_dict, all_label_dict, pred_dict
 
     def train(self, tr_eps, val_eps, tr_labels, val_labels):
-        sample_label = tr_labels[0][0]
+        sample_label = self.filter_labels(tr_labels[0][0], 'regression')
         self.create_probes(sample_label, 'regression')
         e = 0
         all_probes_stopped = np.all([early_stopper.early_stop for early_stopper in self.early_stoppers.values()])
