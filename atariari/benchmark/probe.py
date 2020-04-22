@@ -117,7 +117,7 @@ class ProbeTrainer:
         """Filter the state variables (labels) to create probes for based on the
         probe type.
         """
-        pattern = '^.*_(x|y)(\d|_\d)?$'  # Pattern for regression variable names
+        pattern = '^.*_(x|y)(\d+|_(\d+))?$'  # Pattern for regression variable names
         if probe_type == 'classification':
             return {k: v for k, v in labels.items() if not re.match(pattern, k)}
         else:
@@ -484,32 +484,37 @@ class RegressionProbeTrainer(ProbeTrainer):
             probe.eval()
         mse_dict, mae_dict, target_dict, pred_dict = self.do_test_epoch(test_episodes, test_label_dicts)
 
-        mse_dict, mae_dict = self.postprocess_raw_metrics(mse_dict, mae_dict)
-
         r2_dict = calculate_r2(pred_dict, target_dict)
+        mse_dict, mae_dict, r2_dict = self.postprocess_raw_metrics(mse_dict, mae_dict, r2_dict)
 
-        self.log_results("Test", mse_dict, mae_dict)
+        self.log_results("Test", mse_dict, mae_dict, r2_dict)
         return mse_dict, mae_dict, r2_dict, target_dict, pred_dict
 
     @staticmethod
-    def postprocess_raw_metrics(mse_dict, mae_dict):
-        mse_overall_avg, mae_overall_avg = compute_dict_average(mse_dict), \
-                                          compute_dict_average(mae_dict)
-        mse_category_avgs_dict, mae_category_avgs_dict = compute_category_avgs(mse_dict), \
-                                                         compute_category_avgs(mae_dict)
-        mse_avg_across_categories, mae_avg_across_categories = compute_dict_average(mse_category_avgs_dict), \
-                                                               compute_dict_average(mae_category_avgs_dict)
+    def postprocess_raw_metrics(mse_dict, mae_dict, r2_dict):
+        mse_overall_avg, mae_overall_avg, r2_overall_avg = compute_dict_average(mse_dict), \
+                                                           compute_dict_average(mae_dict), \
+                                                           compute_dict_average(r2_dict)
+        mse_category_avgs_dict, mae_category_avgs_dict, r2_category_avgs_dict = compute_category_avgs(mse_dict), \
+                                                                                compute_category_avgs(mae_dict), \
+                                                                                compute_category_avgs(r2_dict)
+        mse_avg_across_categories, mae_avg_across_categories, r2_avg_across_categories = compute_dict_average(mse_category_avgs_dict), \
+                                                                                         compute_dict_average(mae_category_avgs_dict), \
+                                                                                         compute_dict_average(r2_category_avgs_dict)
         mse_dict.update(mse_category_avgs_dict)
         mae_dict.update(mae_category_avgs_dict)
+        r2_dict.update(r2_category_avgs_dict)
 
-        mse_dict["overall_avg"], mae_dict["overall_avg"] = mse_overall_avg, mae_overall_avg
-        mse_dict["across_categories_avg"], mae_dict["across_categories_avg"] = [mse_avg_across_categories,
-                                                                                mae_avg_across_categories]
+        mse_dict["overall_avg"], mae_dict["overall_avg"], r2_dict["overall_avg"] = mse_overall_avg, mae_overall_avg, r2_overall_avg
+        mse_dict["across_categories_avg"], mae_dict["across_categories_avg"], r2_dict["across_categories_avg"] = [mse_avg_across_categories,
+                                                                                                                  mae_avg_across_categories,
+                                                                                                                  r2_avg_across_categories]
 
         mse_dict = append_suffix(mse_dict, "_mse")
         mae_dict = append_suffix(mae_dict, "_mae")
+        r2_dict = append_suffix(r2_dict, "_r2")
 
-        return mse_dict, mae_dict
+        return mse_dict, mae_dict, r2_dict
 
 
 def compute_category_avgs(metric_dict):
