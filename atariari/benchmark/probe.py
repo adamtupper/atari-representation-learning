@@ -117,7 +117,7 @@ class ProbeTrainer:
         """Filter the state variables (labels) to create probes for based on the
         probe type.
         """
-        pattern = '^.*_(x|y)(\d+|_(\d+))?$'  # Pattern for regression variable names
+        pattern = '^.*(_(x|y)(\d+|_(\d+))?)|_column$'  # Pattern for localization (regression) variable names
         if probe_type == 'classification':
             return {k: v for k, v in labels.items() if not re.match(pattern, k)}
         else:
